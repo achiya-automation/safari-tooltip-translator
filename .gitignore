@@ -1,0 +1,14 @@
+# Xcode
+xcode-project/*/build/
+xcode-project/*/*.xcodeproj/xcuserdata/
+xcode-project/*/*.xcodeproj/project.xcworkspace/xcuserdata/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+
+# macOS
+.DS_Store
+*.dmg
+
+# Temporary
+/tmp/

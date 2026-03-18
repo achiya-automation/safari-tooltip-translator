@@ -1,0 +1,48 @@
+#mtt-tip {
+  position: fixed;
+  z-index: 2147483647;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .15s ease;
+  width: max-content;
+  max-width: min(500px, 75vw);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  box-shadow: 0 2px 12px rgba(0,0,0,.2), 0 0 0 0.5px rgba(255,255,255,.06);
+  word-wrap: break-word;
+  white-space: normal;
+  overflow-wrap: break-word;
+  background: rgba(28,28,30,.9);
+  color: #f5f5f7;
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  direction: rtl;
+  text-align: right;
+}
+
+#mtt-tip.v { opacity: 1; }
+#mtt-tip .t { font-weight: 400; margin: 0; }
+#mtt-tip .l { font-size: 9px; opacity: .25; margin-top: 4px; text-align: left; direction: ltr; }
+
+#mtt-n {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 2147483647;
+  background: rgba(28,28,30,.85);
+  color: #f5f5f7;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-family: -apple-system, sans-serif;
+  font-size: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.2);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  opacity: 0;
+  transition: opacity .3s ease;
+  pointer-events: none;
+}
+
+#mtt-n.v { opacity: 1; }
