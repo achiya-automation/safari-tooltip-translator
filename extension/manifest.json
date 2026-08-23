@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Mouse Tooltip Translator",
-  "version": "1.1.0",
-  "description": "Hover over text to see instant Hebrew translation",
+  "version": "2.0.0",
+  "description": "Translate what you point at, translate single paragraphs in place, and translate video captions live",
   "permissions": ["storage"],
   "host_permissions": [
+    "https://clients5.google.com/*",
     "https://translate.googleapis.com/*"
   ],
   "background": {
@@ -14,7 +15,7 @@
     {
       "matches": ["<all_urls>"],
       "all_frames": true,
-      "js": ["content.js"],
+      "js": ["content.js", "blocks.js", "captions.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

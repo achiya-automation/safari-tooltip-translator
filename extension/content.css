@@ -1,3 +1,5 @@
+/* ── Hover tooltip ─────────────────────────────────────────────────────────── */
+
 #mtt-tip {
   position: fixed;
   z-index: 2147483647;
@@ -39,6 +41,8 @@
   letter-spacing: 0.04em;
 }
 
+/* ── Toast ─────────────────────────────────────────────────────────────────── */
+
 #mtt-n {
   position: fixed;
   top: 16px;
@@ -59,6 +63,134 @@
   transform: translateY(-4px);
   transition: opacity .2s ease, transform .2s ease;
   pointer-events: none;
+  direction: rtl;
 }
 
 #mtt-n.v { opacity: 1; transform: translateY(0); }
+
+/* ── Floating "translate selection" button ─────────────────────────────────── */
+
+#mtt-sel {
+  all: unset;                       /* must come first — it resets everything after it */
+  position: fixed;
+  z-index: 2147483647;
+  opacity: 0;
+  visibility: hidden;
+  transform: scale(0.9);
+  transition: opacity .14s ease, transform .14s ease, visibility .14s;
+  box-sizing: border-box;
+  cursor: pointer;
+  background: #0a84ff;
+  color: #fff;
+  font-family: -apple-system, "SF Pro Text", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 11px;
+  border-radius: 999px;
+  box-shadow: 0 3px 12px rgba(10,132,255,0.42), 0 1px 2px rgba(0,0,0,0.2);
+  direction: rtl;
+  line-height: 1.4;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#mtt-sel.v { opacity: 1; visibility: visible; transform: scale(1); }
+#mtt-sel:hover { background: #339dff; }
+#mtt-sel:active { transform: scale(0.95); }
+
+/* ── In-page block translation ─────────────────────────────────────────────── */
+/* Inherits the page's own type so the translation reads as part of the article,
+   with one accent rule marking it as ours. */
+
+.mtt-tr {
+  display: block;
+  margin: 0.45em 0 0.2em;
+  padding: 0 0 0 0.7em;
+  border-inline-start: 3px solid rgba(10, 132, 255, 0.55);
+  color: inherit;
+  font: inherit;
+  line-height: 1.65;
+  text-align: start;
+  opacity: 0;
+  animation: mtt-fade .22s ease forwards;
+}
+
+.mtt-tr[data-style="under"] { }
+
+.mtt-tr[data-style="quiet"] {
+  border-inline-start: none;
+  padding: 0;
+  opacity: 0;
+  animation: mtt-fade-quiet .22s ease forwards;
+}
+
+.mtt-tr[data-style="card"] {
+  border-inline-start: none;
+  padding: 0.5em 0.75em;
+  margin-top: 0.5em;
+  border-radius: 8px;
+  background: rgba(10, 132, 255, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.16);
+}
+
+.mtt-tr.pending {
+  opacity: .45;
+  animation: mtt-pulse 1.1s ease-in-out infinite;
+  letter-spacing: 0.25em;
+}
+
+@keyframes mtt-fade { to { opacity: 1; } }
+@keyframes mtt-fade-quiet { to { opacity: 0.82; } }
+@keyframes mtt-pulse { 0%,100% { opacity: .3; } 50% { opacity: .6; } }
+
+/* ── Picking mode ──────────────────────────────────────────────────────────── */
+
+html.mtt-picking, html.mtt-picking * { cursor: crosshair !important; }
+
+html.mtt-picking .mtt-pick {
+  outline: 2px solid rgba(10, 132, 255, 0.85) !important;
+  outline-offset: 2px;
+  border-radius: 4px;
+  background: rgba(10, 132, 255, 0.09) !important;
+  transition: background .12s ease;
+}
+
+/* ── Caption overlay ───────────────────────────────────────────────────────── */
+
+.mtt-cap {
+  position: fixed;
+  left: 50%;
+  bottom: 10%;
+  transform: translateX(-50%) translateY(6px);
+  z-index: 2147483646;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .15s ease, transform .15s ease;
+  max-width: min(900px, 90vw);
+  padding: 8px 18px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  font-size: clamp(16px, 2.1vw, 26px);
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+.mtt-cap.v { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ── Light-page adjustments ────────────────────────────────────────────────── */
+
+@media (prefers-color-scheme: light) {
+  .mtt-tr[data-style="card"] { background: rgba(10, 132, 255, 0.06); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #mtt-tip, #mtt-n, #mtt-sel, .mtt-cap { transition: none; }
+  .mtt-tr { animation: none; opacity: 1; }
+  .mtt-tr.pending { animation: none; }
+}

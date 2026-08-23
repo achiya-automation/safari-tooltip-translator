@@ -1,39 +1,158 @@
 <!DOCTYPE html>
-<html dir="rtl">
+<html dir="rtl" lang="he">
 <head>
-  <meta charset="utf-8">
-  <style>
-    body {
-      width: 220px;
-      padding: 12px;
-      font-family: -apple-system, sans-serif;
-      font-size: 13px;
-      background: #1c1c1e;
-      color: #f5f5f7;
-      margin: 0;
-    }
-    h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
-    .row { display: flex; justify-content: space-between; align-items: center; margin: 6px 0; }
-    .label { opacity: .7; }
-    .toggle { position: relative; width: 40px; height: 22px; }
-    .toggle input { opacity: 0; width: 0; height: 0; }
-    .slider { position: absolute; cursor: pointer; inset: 0; background: #48484a; border-radius: 11px; transition: .2s; }
-    .slider:before { content: ""; position: absolute; width: 18px; height: 18px; left: 2px; bottom: 2px; background: #fff; border-radius: 50%; transition: .2s; }
-    input:checked + .slider { background: #30d158; }
-    input:checked + .slider:before { transform: translateX(18px); }
-    .shortcut { font-size: 11px; opacity: .4; margin-top: 8px; text-align: center; }
-  </style>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #1c1c1e;
+    --fg: #f5f5f7;
+    --dim: rgba(245,245,247,.55);
+    --line: rgba(255,255,255,.10);
+    --fill: rgba(255,255,255,.07);
+    --fill-hi: rgba(255,255,255,.13);
+    --accent: #0a84ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    width: 276px;
+    margin: 0;
+    padding: 14px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+
+  .toggle { position: relative; width: 40px; height: 22px; flex: none; }
+  .toggle input { opacity: 0; width: 0; height: 0; margin: 0; }
+  .slider { position: absolute; cursor: pointer; inset: 0; background: #48484a; border-radius: 11px; transition: .2s; }
+  .slider:before {
+    content: ""; position: absolute; width: 18px; height: 18px;
+    left: 2px; bottom: 2px; background: #fff; border-radius: 50%; transition: .2s;
+  }
+  input:checked + .slider { background: #30d158; }
+  input:checked + .slider:before { transform: translateX(18px); }
+  input:focus-visible + .slider { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  section { margin-bottom: 12px; }
+  .label { font-size: 10px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+
+  .actions { display: grid; gap: 6px; }
+  button.act {
+    all: unset;
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 11px;
+    background: var(--fill);
+    border-radius: 9px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background .12s ease;
+  }
+  button.act:hover { background: var(--fill-hi); }
+  button.act:active { transform: scale(.985); }
+  button.act:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.act .ico { font-size: 14px; width: 17px; text-align: center; flex: none; }
+  button.act .kbd { margin-inline-start: auto; font-size: 10px; color: var(--dim); font-family: ui-monospace, Menlo, monospace; }
+  button.act.primary { background: var(--accent); }
+  button.act.primary:hover { background: #339dff; }
+  button.act.primary .kbd { color: rgba(255,255,255,.7); }
+
+  .seg { display: flex; background: var(--fill); border-radius: 8px; padding: 2px; gap: 2px; }
+  .seg button {
+    all: unset; flex: 1; text-align: center; padding: 6px 0;
+    border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 500;
+    color: var(--dim); transition: background .12s ease, color .12s ease;
+  }
+  .seg button[aria-pressed="true"] { background: var(--fill-hi); color: var(--fg); }
+  .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  select {
+    all: unset;
+    background: var(--fill); padding: 6px 10px; border-radius: 8px;
+    cursor: pointer; font-size: 12px; color: var(--fg);
+  }
+  select:focus-visible { outline: 2px solid var(--accent); }
+
+  footer { border-top: 1px solid var(--line); padding-top: 9px; margin-top: 2px; }
+  .keys { display: grid; grid-template-columns: auto 1fr; gap: 3px 8px; font-size: 11px; color: var(--dim); }
+  .keys kbd {
+    font-family: ui-monospace, Menlo, monospace; font-size: 10px;
+    background: var(--fill); padding: 1px 5px; border-radius: 4px; justify-self: start; direction: ltr;
+  }
+  .note { font-size: 10.5px; color: var(--dim); margin-top: 8px; line-height: 1.5; }
+</style>
 </head>
 <body>
-  <h3>🌐 Tooltip Translator</h3>
-  <div class="row">
-    <span class="label">פעיל</span>
+  <header>
+    <h1>🌐 Tooltip Translator</h1>
     <label class="toggle">
-      <input type="checkbox" id="enabled" checked>
+      <input type="checkbox" id="enabled" checked aria-label="הפעלת התוסף">
       <span class="slider"></span>
     </label>
-  </div>
-  <div class="shortcut">Alt+T להפעלה/כיבוי</div>
+  </header>
+
+  <section>
+    <div class="label">תרגום קטעים בעמוד</div>
+    <div class="actions">
+      <button class="act primary" id="visible">
+        <span class="ico">📄</span><span>תרגם מה שרואים במסך</span><span class="kbd">⌥A</span>
+      </button>
+      <button class="act" id="pick">
+        <span class="ico">🎯</span><span>בחירת קטעים בלחיצה</span><span class="kbd">⌥S</span>
+      </button>
+      <button class="act" id="clear">
+        <span class="ico">🧹</span><span>הסר את כל התרגומים</span><span class="kbd">⌥C</span>
+      </button>
+    </div>
+  </section>
+
+  <section>
+    <div class="label">כתוביות וידאו</div>
+    <div class="actions">
+      <button class="act" id="captions">
+        <span class="ico">🎬</span><span id="captionsLabel">כתוביות מתורגמות</span><span class="kbd">⌥K</span>
+      </button>
+    </div>
+  </section>
+
+  <section>
+    <div class="label">תרגום בריחוף עכבר</div>
+    <div class="seg" role="group" aria-label="מצב ריחוף">
+      <button data-hover="always" aria-pressed="false">תמיד</button>
+      <button data-hover="shift" aria-pressed="false">עם Shift</button>
+      <button data-hover="off" aria-pressed="false">כבוי</button>
+    </div>
+  </section>
+
+  <section class="row">
+    <span class="label" style="margin:0">שפת יעד</span>
+    <select id="lang" aria-label="שפת יעד">
+      <option value="he">עברית</option>
+      <option value="en">אנגלית</option>
+      <option value="ar">ערבית</option>
+      <option value="ru">רוסית</option>
+      <option value="fr">צרפתית</option>
+      <option value="es">ספרדית</option>
+      <option value="de">גרמנית</option>
+    </select>
+  </section>
+
+  <footer>
+    <div class="keys">
+      <kbd>⌥ click</kbd><span>תרגום הפסקה שלוחצים עליה</span>
+      <kbd>⌥ tap</kbd><span>תרגום השדה שכותבים בו</span>
+      <kbd>F8</kbd><span>מילה בודדת / משפט שלם</span>
+      <kbd>⌥T</kbd><span>הפעלה וכיבוי</span>
+    </div>
+    <div class="note">סימון טקסט מציג כפתור "תרגם" לידו.</div>
+  </footer>
+
   <script src="popup.js"></script>
 </body>
 </html>

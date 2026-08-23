@@ -28,6 +28,8 @@
 		819AA7C52F6B21E700E3A95B /* icons in Resources */ = {isa = PBXBuildFile; fileRef = 819AA7BA2F6B21E700E3A95B /* icons */; };
 		819AA7C62F6B21E700E3A95B /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 819AA7BB2F6B21E700E3A95B /* manifest.json */; };
 		819AA7C72F6B21E700E3A95B /* content.js in Resources */ = {isa = PBXBuildFile; fileRef = 819AA7BC2F6B21E700E3A95B /* content.js */; };
+		819AA7D32F6B21E700E3A95B /* captions.js in Resources */ = {isa = PBXBuildFile; fileRef = 819AA7D22F6B21E700E3A95B /* captions.js */; };
+		819AA7D12F6B21E700E3A95B /* blocks.js in Resources */ = {isa = PBXBuildFile; fileRef = 819AA7D02F6B21E700E3A95B /* blocks.js */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -79,6 +81,8 @@
 		819AA7BA2F6B21E700E3A95B /* icons */ = {isa = PBXFileReference; lastKnownFileType = folder; name = icons; path = ../../../extension/icons; sourceTree = "<group>"; };
 		819AA7BB2F6B21E700E3A95B /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = manifest.json; path = ../../../extension/manifest.json; sourceTree = "<group>"; };
 		819AA7BC2F6B21E700E3A95B /* content.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = content.js; path = ../../../extension/content.js; sourceTree = "<group>"; };
+		819AA7D22F6B21E700E3A95B /* captions.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = captions.js; path = ../../../extension/captions.js; sourceTree = "<group>"; };
+		819AA7D02F6B21E700E3A95B /* blocks.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = blocks.js; path = ../../../extension/blocks.js; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -165,6 +169,8 @@
 				819AA7BA2F6B21E700E3A95B /* icons */,
 				819AA7BB2F6B21E700E3A95B /* manifest.json */,
 				819AA7BC2F6B21E700E3A95B /* content.js */,
+				819AA7D22F6B21E700E3A95B /* captions.js */,
+				819AA7D02F6B21E700E3A95B /* blocks.js */,
 			);
 			name = Resources;
 			path = "Tooltip Translator Extension";
@@ -271,6 +277,8 @@
 			files = (
 				819AA7BD2F6B21E700E3A95B /* background in Resources */,
 				819AA7C72F6B21E700E3A95B /* content.js in Resources */,
+				819AA7D32F6B21E700E3A95B /* captions.js in Resources */,
+				819AA7D12F6B21E700E3A95B /* blocks.js in Resources */,
 				819AA7C22F6B21E700E3A95B /* popup.html in Resources */,
 				819AA7C62F6B21E700E3A95B /* manifest.json in Resources */,
 				819AA7C42F6B21E700E3A95B /* content in Resources */,
@@ -455,7 +463,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = PQ7BWRHSYV;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -470,7 +478,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 10.14;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.2;
 				OTHER_LDFLAGS = (
 					"-framework",
 					SafariServices,
@@ -490,7 +498,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = PQ7BWRHSYV;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -505,7 +513,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 10.14;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.2;
 				OTHER_LDFLAGS = (
 					"-framework",
 					SafariServices,
@@ -528,7 +536,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = PQ7BWRHSYV;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -544,7 +552,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.2;
 				OTHER_LDFLAGS = (
 					"-framework",
 					SafariServices,
@@ -570,7 +578,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = PQ7BWRHSYV;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -586,7 +594,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.2;
 				OTHER_LDFLAGS = (
 					"-framework",
 					SafariServices,

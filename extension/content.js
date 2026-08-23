@@ -1,50 +1,46 @@
-// Content script - runs in every page, handles hover detection + tooltip display
-// Translation requests are sent to background.js via browser.runtime.sendMessage
+// Core content script: settings, the translation call, text extraction, the hover
+// tooltip, selection handling and keyboard. Exposes window.MTT for blocks.js and
+// captions.js, which load after this file.
 (function () {
   'use strict';
   if (window.__mttActive) return;
   window.__mttActive = true;
 
-  const CONFIG = {
+  const DEFAULTS = {
     targetLang: 'he',
     sourceLang: 'auto',
-    tooltipDelay: 500,
+    tooltipDelay: 450,
     enabled: true,
-    wordMode: false   // F8: word mode vs sentence mode
+    wordMode: false,      // F8: word under cursor vs. whole sentence
+    hoverMode: 'always',  // 'always' | 'shift' | 'off' — when the tooltip may appear
+    blockStyle: 'under'   // how block translations render (see blocks.js)
   };
+  const CONFIG = Object.assign({}, DEFAULTS);
 
-  // Load saved state
-  browser.storage.local.get(['enabled', 'wordMode']).then(data => {
-    if (data.enabled === false) CONFIG.enabled = false;
-    if (data.wordMode === true) CONFIG.wordMode = true;
+  const STORED = ['enabled', 'wordMode', 'hoverMode', 'targetLang', 'blockStyle'];
+  browser.storage.local.get(STORED).then(data => {
+    for (const k of STORED) if (data[k] !== undefined) CONFIG[k] = data[k];
   }).catch(() => {});
-
-  // Listen for toggle from popup
-  browser.runtime.onMessage.addListener(msg => {
-    if (msg.type === 'toggle') {
-      CONFIG.enabled = msg.enabled;
-      if (!CONFIG.enabled) hide();
-    }
-  });
 
   // ── Language helpers ────────────────────────────────────────────────────────
 
   function isMostlyHebrew(text) {
-    const heb = (text.match(/[\u0590-\u05FF]/g) || []).length;
+    const heb = (text.match(/[֐-׿]/g) || []).length;
     const all = (text.match(/\p{L}/gu) || []).length;
     return all > 0 && heb / all >= 0.5;
   }
 
+  // Already in the target language (or close enough) → nothing to translate.
   function isMostlyTargetLang(text) {
-    const heb = (text.match(/[\u0590-\u05FF]/g) || []).length;
-    const arb = (text.match(/[\u0600-\u06FF]/g) || []).length;
+    const heb = (text.match(/[֐-׿]/g) || []).length;
+    const arb = (text.match(/[؀-ۿ]/g) || []).length;
     const all = (text.match(/\p{L}/gu) || []).length;
     if (all === 0) return true;
     return (heb + arb) / all >= 0.7;
   }
 
   function isMixed(text) {
-    const heb = (text.match(/[\u0590-\u05FF]/g) || []).length;
+    const heb = (text.match(/[֐-׿]/g) || []).length;
     const latin = (text.match(/[a-zA-Z]/g) || []).length;
     const all = (text.match(/\p{L}/gu) || []).length;
     if (all === 0) return false;
@@ -65,13 +61,75 @@
   }
 
   function isRTL(text) {
-    return /[\u0590-\u05FF\u0600-\u06FF]/.test(text);
+    return /[֐-׿؀-ۿ]/.test(text);
   }
 
-  // ── DOM helpers ──────────────────────────────────────────────────────────────
+  // ── Translation gateway ─────────────────────────────────────────────────────
 
-  function deepElementFromPoint(x, y) {
-    let el = document.elementFromPoint(x, y);
+  const cache = new Map();
+  const CACHE_MAX = 400;
+  function cacheKey(text, sl, tl) { return sl + '|' + tl + '|' + text; }
+  function cacheSet(k, v) {
+    if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value);
+    cache.set(k, v);
+  }
+
+  // A 429 used to surface as nothing at all — the tooltip simply never appeared
+  // and the extension read as broken. Report it once, then stay quiet.
+  let lastErrorNotice = 0;
+  function reportError(err) {
+    if (!err) return;
+    const now = Date.now();
+    if (now - lastErrorNotice < 20000) return;
+    lastErrorNotice = now;
+    notify(err === 'rate-limited'
+      ? '⏳ גוגל חוסמת זמנית — כמה שניות והתרגום חוזר'
+      : '⚠️ התרגום לא זמין כרגע');
+  }
+
+  // Translate one string. Returns {translated, lang} or null.
+  async function translate(text, sl, tl) {
+    const key = cacheKey(text, sl, tl);
+    if (cache.has(key)) return cache.get(key);
+    const r = await browser.runtime.sendMessage({ type: 'translate', text, sl, tl });
+    if (!r || r.error) { reportError(r && r.error); if (!r || !r.translated) return null; }
+    if (!r.translated) return null;
+    const out = { translated: r.translated, lang: r.lang || '' };
+    cacheSet(key, out);
+    return out;
+  }
+
+  // Translate many strings in one round trip. Returns an array aligned with input;
+  // entries may be null. Cached items never leave the page.
+  async function translateMany(texts, sl, tl) {
+    const out = new Array(texts.length);
+    const pending = [], pendingIdx = [];
+    texts.forEach((t, i) => {
+      const key = cacheKey(t, sl, tl);
+      if (cache.has(key)) out[i] = cache.get(key);
+      else { pending.push(t); pendingIdx.push(i); }
+    });
+    if (!pending.length) return out;
+
+    const r = await browser.runtime.sendMessage({ type: 'translateBatch', texts: pending, sl, tl });
+    if (!r || r.error) reportError(r && r.error ? r.error : 'failed');
+    if (r && r.results) {
+      r.results.forEach((res, j) => {
+        if (!res || !res.translated) return;
+        const i = pendingIdx[j];
+        const val = { translated: res.translated, lang: res.lang || '' };
+        cacheSet(cacheKey(texts[i], sl, tl), val);
+        out[i] = val;
+      });
+    }
+    return out;
+  }
+
+  // ── DOM helpers ─────────────────────────────────────────────────────────────
+
+  function deepElementFromPoint(x, y, doc) {
+    const d = doc || document;
+    let el = d.elementFromPoint(x, y);
     while (el && el.shadowRoot) {
       const inner = el.shadowRoot.elementFromPoint(x, y);
       if (!inner || inner === el) break;
@@ -80,18 +138,50 @@
     return el;
   }
 
-  function isBlockElement(el) {
-    if (!el || el === document.body) return false;
-    const tag = el.tagName;
-    if (['P','LI','TD','TH','DD','DT','BLOCKQUOTE','H1','H2','H3','H4','H5','H6',
-         'FIGCAPTION','SUMMARY','DIV','SECTION','ARTICLE'].includes(tag)) return true;
-    const disp = window.getComputedStyle(el).display;
-    return disp === 'block' || disp === 'list-item' || disp === 'table-cell';
+  function isSvgElement(el) {
+    return el && el.namespaceURI === 'http://www.w3.org/2000/svg';
   }
 
-  // ── Text extraction ──────────────────────────────────────────────────────────
+  function isOurs(el) {
+    if (!el) return false;
+    if (el.id && el.id.startsWith('mtt-')) return true;
+    return !!(el.closest && el.closest('#mtt-tip, #mtt-n, #mtt-sel, .mtt-tr, .mtt-cap'));
+  }
 
-  // Extract word at caret position from a text node
+  // True only when the cursor visually sits on a direct (non-nested) text-node
+  // child. Prevents grabbing a whole container's text just because it wraps some.
+  function cursorOverDirectText(el, x, y, doc) {
+    if (!el || !el.childNodes) return false;
+    const d = doc || document;
+    for (const node of el.childNodes) {
+      if (node.nodeType !== 3) continue;
+      if (!node.textContent.trim()) continue;
+      try {
+        const range = d.createRange();
+        range.selectNodeContents(node);
+        for (const rect of range.getClientRects()) {
+          if (x >= rect.left - 2 && x <= rect.right + 2 &&
+              y >= rect.top - 2 && y <= rect.bottom + 2) return true;
+        }
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  function rectsAtPoint(node, x, y, doc) {
+    try {
+      const range = (doc || document).createRange();
+      range.selectNodeContents(node);
+      for (const rect of range.getClientRects()) {
+        if (x >= rect.left - 2 && x <= rect.right + 2 &&
+            y >= rect.top - 2 && y <= rect.bottom + 2) return rect;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // ── Text extraction ─────────────────────────────────────────────────────────
+
   function getWordAtCaret(caretRange) {
     if (!caretRange || caretRange.startContainer.nodeType !== 3) return '';
     const text = caretRange.startContainer.textContent;
@@ -102,88 +192,102 @@
     return text.substring(start, end).trim();
   }
 
-  // Main text getter: selection > word/sentence under cursor
-  function getText(e) {
-    // 1. User has text selected → use it
-    const sel = window.getSelection();
-    if (sel && sel.type === 'Range') {
-      const t = sel.toString().trim();
-      if (t.length > 1) return t.substring(0, 1000);
-    }
-
-    const el = deepElementFromPoint(e.clientX, e.clientY);
-    if (!el) return '';
+  // Returns {text, rect} — rect is the area the text occupies, so the tooltip can
+  // stay put while the pointer moves inside it.
+  function getTextAt(x, y, doc) {
+    const d = doc || document;
+    const el = deepElementFromPoint(x, y, d);
+    if (!el) return null;
     const tag = el.tagName;
-    if (['INPUT','TEXTAREA','SELECT'].includes(tag) || el.isContentEditable) return '';
-    if (el.id === 'mtt-tip' || el.id === 'mtt-n') return '';
-    if (el.closest && (el.closest('#mtt-tip') || el.closest('#mtt-n'))) return '';
-    if (['SCRIPT','STYLE','NOSCRIPT','IMG','SVG','VIDEO','CANVAS','BR','HR'].includes(tag)) return '';
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag) || el.isContentEditable) return null;
+    if (isOurs(el)) return null;
+    if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'IMG', 'SVG', 'VIDEO', 'CANVAS', 'BR', 'HR'].includes(tag)) return null;
+    if (isSvgElement(el)) return null;
 
-    const caretRange = document.caretRangeFromPoint?.(e.clientX, e.clientY);
+    const caretRange = d.caretRangeFromPoint ? d.caretRangeFromPoint(x, y) : null;
     if (caretRange && caretRange.startContainer.nodeType === 3) {
       const textNode = caretRange.startContainer;
+      const rect = rectsAtPoint(textNode, x, y, d);
+      if (!rect) return null;
 
-      // Verify cursor is actually over the text node
-      const testRange = document.createRange();
-      testRange.selectNodeContents(textNode);
-      const rects = testRange.getClientRects();
-      let onText = false;
-      for (const rect of rects) {
-        if (e.clientX >= rect.left - 2 && e.clientX <= rect.right + 2 &&
-            e.clientY >= rect.top - 2 && e.clientY <= rect.bottom + 2) {
-          onText = true; break;
-        }
-      }
-      if (!onText) return '';
-
-      // Word mode: return just the word under cursor
       if (CONFIG.wordMode) {
-        return getWordAtCaret(caretRange);
+        const w = getWordAtCaret(caretRange);
+        return w ? { text: w, rect } : null;
       }
 
-      // Sentence mode: walk up to block element
-      let block = textNode.parentElement;
-      if (block && ['A','BUTTON','LABEL'].includes(block.tagName)) {
-        const t = (block.innerText || '').trim();
-        if (t.length >= 2 && t.length <= 300) return t;
+      // Sentence mode: keep the largest ancestor whose text still fits MAX. Stop
+      // the moment one exceeds it, or we swallow sibling content from big wrappers
+      // (the n8n canvas wraps every node label in one shared parent).
+      const MAX = 350;
+      let best = '', cur = textNode.parentElement, depth = 0, bestEl = null;
+      while (cur && cur !== d.body && depth < 5) {
+        const ct = (cur.innerText || '').trim();
+        if (ct.length > MAX) break;
+        if (ct.length >= 2) { best = ct; bestEl = cur; }
+        cur = cur.parentElement;
+        depth++;
       }
-      while (block && !isBlockElement(block)) block = block.parentElement;
-      if (block && block !== document.body) {
-        return (block.innerText || '').trim().substring(0, 1000);
-      }
+      if (best) return { text: best, rect: bestEl.getBoundingClientRect() };
+      const nt = textNode.textContent.trim();
+      return nt.length >= 2 ? { text: nt.substring(0, MAX), rect } : null;
     }
 
-    return '';
+    // caretRangeFromPoint failed (Shadow DOM, user-select:none, chat widgets).
+    if (CONFIG.wordMode) {
+      if (cursorOverDirectText(el, x, y, d)) {
+        const ft = (el.innerText || el.textContent || '').trim();
+        if (ft.length >= 2 && ft.length <= 50) return { text: ft, rect: el.getBoundingClientRect() };
+      }
+      return null;
+    }
+    let candidate = el;
+    for (let hops = 0; hops < 4 && candidate && candidate !== d.body; hops++) {
+      if (cursorOverDirectText(candidate, x, y, d)) {
+        const t = (candidate.innerText || candidate.textContent || '').trim();
+        if (t.length >= 2) return { text: t.substring(0, 350), rect: candidate.getBoundingClientRect() };
+      }
+      candidate = candidate.parentElement ||
+        (candidate.getRootNode instanceof Function && candidate.getRootNode() instanceof ShadowRoot
+          ? candidate.getRootNode().host : null);
+    }
+    return null;
   }
 
-  // ── Tooltip ─────────────────────────────────────────────────────────────────
+  // ── Tooltip + toast ─────────────────────────────────────────────────────────
 
   let tip, notif;
   function attachToDOM() {
     if (!document.body) { document.addEventListener('DOMContentLoaded', attachToDOM); return; }
-    tip = document.createElement('div'); tip.id = 'mtt-tip';
+    tip = document.createElement('div');
+    tip.id = 'mtt-tip';
     tip.setAttribute('role', 'tooltip');
-    tip.setAttribute('data-v', '5');  // version marker
     document.body.appendChild(tip);
-    notif = document.createElement('div'); notif.id = 'mtt-n';
+    notif = document.createElement('div');
+    notif.id = 'mtt-n';
     notif.setAttribute('aria-live', 'polite');
     document.body.appendChild(notif);
   }
   attachToDOM();
 
-  function notify(msg) {
+  function notify(msg, ms) {
     if (!notif) return;
     notif.textContent = msg;
     notif.classList.add('v');
-    setTimeout(() => notif.classList.remove('v'), 1500);
+    clearTimeout(notify._t);
+    notify._t = setTimeout(() => notif.classList.remove('v'), ms || 1600);
   }
 
-  function show(trans, lang, isReverse) {
+  let vis = false, mx = 0, my = 0;
+  let holdRect = null;   // area the tooltip belongs to; leaving it hides the tip
+
+  function show(trans, lang, isReverse, anchorRect) {
     if (!tip) return;
+    // Keep the tooltip last in body so it paints above iframes.
+    if (tip.nextSibling) document.body.appendChild(tip);
+    if (notif && notif.nextSibling) document.body.appendChild(notif);
     while (tip.firstChild) tip.removeChild(tip.firstChild);
 
-    const rtl = isRTL(trans);
-    tip.style.direction = rtl ? 'rtl' : 'ltr';
+    tip.style.direction = isRTL(trans) ? 'rtl' : 'ltr';
 
     const td = document.createElement('div');
     td.className = 't';
@@ -198,107 +302,156 @@
     }
 
     tip.classList.remove('v');
-    tip.style.left = '-9999px'; tip.style.top = '-9999px';
+    tip.style.left = '-9999px';
+    tip.style.top = '-9999px';
     tip.style.visibility = 'hidden';
     const tw = tip.offsetWidth, th = tip.offsetHeight;
     tip.style.visibility = '';
 
-    const margin = 10, dist = 20;
+    const margin = 10, dist = 18;
     const vw = window.innerWidth, vh = window.innerHeight;
     let left = mx + dist, top = my + dist;
     if (left + tw > vw - margin) left = mx - tw - dist;
     if (top + th > vh - margin) top = my - th - dist;
-    left = Math.max(margin, left);
-    top = Math.max(margin, top);
-    tip.style.left = left + 'px';
-    tip.style.top = top + 'px';
+    tip.style.left = Math.max(margin, left) + 'px';
+    tip.style.top = Math.max(margin, top) + 'px';
 
     requestAnimationFrame(() => tip.classList.add('v'));
     vis = true;
+    holdRect = anchorRect || null;
   }
 
   function hide() {
     if (tip) tip.classList.remove('v');
     vis = false;
+    holdRect = null;
   }
 
-  // ── Cache ────────────────────────────────────────────────────────────────────
-
-  const cache = new Map();
-  const CACHE_MAX = 200;
-  function cacheSet(k, v) {
-    if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value);
-    cache.set(k, v);
+  // Grace area: the text's own box, padded, so small pointer jitter — or moving
+  // toward the tooltip — does not blank the translation the moment it appears.
+  function insideHold(x, y) {
+    if (!holdRect) return false;
+    const pad = 28;
+    return x >= holdRect.left - pad && x <= holdRect.right + pad &&
+           y >= holdRect.top - pad && y <= holdRect.bottom + pad;
   }
-  function cacheGet(k) { return cache.get(k); }
 
-  // ── Core translate function ──────────────────────────────────────────────────
+  // ── Hover flow ──────────────────────────────────────────────────────────────
 
-  let timer = null, lastT = '', vis = false, mx = 0, my = 0, requestId = 0;
+  let timer = null, lastT = '', requestId = 0;
 
-  function translateAndShow(text, isReverse) {
+  async function translateAndShow(text, isReverse, anchorRect) {
     if (isSkippable(text)) return;
     if (!isReverse && isMostlyTargetLang(text)) return;
 
     const tl = isReverse ? 'en' : CONFIG.targetLang;
     const sl = (!isReverse && isMixed(text)) ? 'en' : CONFIG.sourceLang;
-    const ck = sl + '|' + tl + '|' + text;
-    const cached = cacheGet(ck);
-
-    if (cached) { show(cached.translated, cached.lang, isReverse); return; }
-    if (!isReverse && text === lastT) return;
+    if (!isReverse && text === lastT && vis) return;
     lastT = text;
 
     const thisRequest = ++requestId;
-    browser.runtime.sendMessage({ type: 'translate', text, sl, tl })
-      .then(r => {
-        if (requestId !== thisRequest) return;
-        if (!r.translated) return;
-        if (r.translated.toLowerCase() === text.toLowerCase()) return;
-        if (isSameWords(r.translated, text)) return;
-        cacheSet(ck, r);
-        show(r.translated, r.lang, isReverse);
-      }).catch(err => console.warn('MTT:', err));
+    const r = await translate(text, sl, tl);
+    if (requestId !== thisRequest || !r) return;
+    if (r.translated.toLowerCase() === text.toLowerCase()) return;
+    if (isSameWords(r.translated, text)) return;
+    show(r.translated, r.lang, isReverse, anchorRect);
   }
 
-  // ── Hover translation ────────────────────────────────────────────────────────
+  let shiftDown = false;
+  function hoverAllowed(e) {
+    if (!CONFIG.enabled) return false;
+    if (CONFIG.hoverMode === 'off') return false;
+    if (CONFIG.hoverMode === 'shift') return e.shiftKey || shiftDown;
+    return true;
+  }
 
-  document.addEventListener('mousemove', e => {
-    mx = e.clientX; my = e.clientY;
-    if (!CONFIG.enabled) return;
-    if (timer) { clearTimeout(timer); timer = null; }
-    if (vis) hide();
+  function onMove(e, doc, offsetX, offsetY) {
+    mx = e.clientX + (offsetX || 0);
+    my = e.clientY + (offsetY || 0);
+    if (!hoverAllowed(e)) { if (vis) hide(); return; }
+    // Only drop the tooltip once the pointer actually leaves the text it belongs
+    // to. The old build hid on every single mousemove, so any nudge blanked it.
+    if (vis && !insideHold(mx, my)) { hide(); lastT = ''; }
+    if (timer) clearTimeout(timer);
+    const cx = e.clientX, cy = e.clientY;
     timer = setTimeout(() => {
-      const text = getText(e);
-      translateAndShow(text, false);
+      const hit = getTextAt(cx, cy, doc);
+      if (!hit) return;
+      const rect = doc === document ? hit.rect : offsetRect(hit.rect, offsetX, offsetY);
+      translateAndShow(hit.text, false, rect);
     }, CONFIG.tooltipDelay);
-  }, { passive: true });
+  }
 
-  // ── Selection translation (mouseup) ─────────────────────────────────────────
+  function offsetRect(r, dx, dy) {
+    return { left: r.left + (dx || 0), right: r.right + (dx || 0),
+             top: r.top + (dy || 0), bottom: r.bottom + (dy || 0) };
+  }
+
+  document.addEventListener('mousemove', e => onMove(e, document, 0, 0), { passive: true });
+
+  // ── Selection → floating button (DeepL / Google Translate pattern) ───────────
+
+  let selBtn = null;
+  function ensureSelBtn() {
+    if (selBtn || !document.body) return selBtn;
+    selBtn = document.createElement('button');
+    selBtn.id = 'mtt-sel';
+    selBtn.type = 'button';
+    selBtn.textContent = 'תרגם';
+    selBtn.setAttribute('aria-label', 'תרגם את הטקסט המסומן');
+    selBtn.addEventListener('mousedown', ev => ev.preventDefault());
+    selBtn.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const t = selBtn.dataset.text || '';
+      hideSelBtn();
+      if (t) translateAndShow(t, false, null);
+    });
+    document.body.appendChild(selBtn);
+    return selBtn;
+  }
+
+  function hideSelBtn() { if (selBtn) selBtn.classList.remove('v'); }
+
+  function showSelBtn(text, rect) {
+    const b = ensureSelBtn();
+    if (!b) return;
+    if (b.nextSibling) document.body.appendChild(b);
+    b.dataset.text = text;
+    b.style.left = Math.min(window.innerWidth - 70, Math.max(8, rect.right - 20)) + 'px';
+    b.style.top = Math.min(window.innerHeight - 40, rect.bottom + 6) + 'px';
+    b.classList.add('v');
+    mx = rect.right; my = rect.bottom;
+  }
+
+  function onMouseUp(e, doc, offX, offY) {
+    if (!CONFIG.enabled) return;
+    setTimeout(() => {
+      const sel = (doc || document).getSelection();
+      if (!sel || sel.type !== 'Range') { hideSelBtn(); return; }
+      const text = sel.toString().trim();
+      if (text.length < 2 || isMostlyTargetLang(text)) { hideSelBtn(); return; }
+      let rect;
+      try {
+        const r = sel.getRangeAt(0).getBoundingClientRect();
+        rect = offsetRect(r, offX, offY);
+      } catch (_) { hideSelBtn(); return; }
+      if (timer) { clearTimeout(timer); timer = null; }
+      showSelBtn(text.substring(0, 4000), rect);
+    }, 40);
+  }
 
   document.addEventListener('mouseup', e => {
-    if (!CONFIG.enabled) return;
-    // Small delay to let selection finalize
-    setTimeout(() => {
-      const sel = window.getSelection();
-      if (!sel || sel.type !== 'Range') return;
-      const text = sel.toString().trim();
-      if (text.length < 2) return;
-
-      // Position tooltip near end of selection
-      try {
-        const range = sel.getRangeAt(0);
-        const rect = range.getBoundingClientRect();
-        mx = rect.right;
-        my = rect.bottom;
-      } catch (_) {}
-
-      if (timer) { clearTimeout(timer); timer = null; }
-      translateAndShow(text, false);
-    }, 50);
+    if (isOurs(e.target)) return;
+    onMouseUp(e, document, 0, 0);
   }, { passive: true });
 
-  // ── Input translation (Option key) ───────────────────────────────────────────
+  document.addEventListener('mousedown', e => {
+    if (!isOurs(e.target)) hideSelBtn();
+  }, { passive: true });
+
+  document.addEventListener('scroll', () => { hideSelBtn(); if (vis) hide(); }, { passive: true, capture: true });
+
+  // ── Input translation (tap Alt) ─────────────────────────────────────────────
 
   function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -306,28 +459,17 @@
     let el = document.activeElement;
     if (!el) return null;
 
-    // If focus is inside a same-origin iframe (Gmail compose, etc.),
-    // reach into it to find the actual editable element
+    // Focus inside a same-origin iframe (Gmail compose, rich editors).
     if (el.tagName === 'IFRAME') {
       try {
-        const iframeDoc = el.contentDocument || el.contentWindow?.document;
+        const iframeDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
         if (iframeDoc) {
-          let inner = iframeDoc.activeElement;
-          if (inner && inner.tagName === 'BODY' && inner.isContentEditable) {
-            return { el: inner, doc: iframeDoc, iframe: true };
-          }
-          if (inner && inner.isContentEditable) {
-            return { el: inner, doc: iframeDoc, iframe: true };
-          }
-          // Try finding contentEditable in iframe body
+          const inner = iframeDoc.activeElement;
+          if (inner && inner.isContentEditable) return { el: inner, doc: iframeDoc };
           const editable = iframeDoc.querySelector('[contenteditable="true"]');
-          if (editable) {
-            return { el: editable, doc: iframeDoc, iframe: true };
-          }
+          if (editable) return { el: editable, doc: iframeDoc };
         }
-      } catch (_) {
-        // Cross-origin iframe — can't access
-      }
+      } catch (_) {}   // cross-origin
       return null;
     }
 
@@ -336,217 +478,220 @@
       if (!inner) break;
       el = inner;
     }
-    if (el.tagName === 'TEXTAREA') return { el, doc: document, iframe: false };
-    if (el.tagName === 'INPUT' && !['checkbox','radio','file','submit','button','reset','image'].includes(el.type || '')) return { el, doc: document, iframe: false };
-    if (el.isContentEditable) return { el, doc: document, iframe: false };
-    // Also check role=textbox and spellcheck elements (Discord, Slack, etc.)
-    if (el.getAttribute && (el.getAttribute('role') === 'textbox' || el.getAttribute('spellcheck') === 'true')) return { el, doc: document, iframe: false };
+    if (el.tagName === 'TEXTAREA') return { el, doc: document };
+    if (el.tagName === 'INPUT' &&
+        !['checkbox', 'radio', 'file', 'submit', 'button', 'reset', 'image'].includes(el.type || ''))
+      return { el, doc: document };
+    if (el.isContentEditable) return { el, doc: document };
+    if (el.getAttribute &&
+        (el.getAttribute('role') === 'textbox' || el.getAttribute('spellcheck') === 'true'))
+      return { el, doc: document };
     return null;
   }
 
   async function translateInput(target) {
-    const el = target.el;
-    const doc = target.doc;
+    const el = target.el, doc = target.doc;
     const win = doc.defaultView || window;
 
-    // Refocus element in case Alt key caused blur
     el.focus();
     await delay(30);
-
-    // Select all text in the field
     doc.execCommand('selectAll', false, null);
     await delay(50);
 
-    // Get selected text
     let text = '';
     if (el.isContentEditable) {
-      text = (win.getSelection() || '').toString().trim();
+      text = String(win.getSelection() || '').trim();
     } else {
-      // For input/textarea, execCommand selectAll may not work — fallback to .value
-      const selText = (win.getSelection() || '').toString().trim();
+      const selText = String(win.getSelection() || '').trim();
       text = selText || (el.value || '').trim();
-      if (!selText && text) {
-        el.select(); // ensure text is selected for replacement
-        await delay(30);
-      }
+      if (!selText && text) { el.select(); await delay(30); }
     }
-
     if (!text || text.length < 2) return;
 
-    const isHeb = isMostlyHebrew(text);
-    const tl = isHeb ? 'en' : CONFIG.targetLang;
+    const tl = isMostlyHebrew(text) ? 'en' : CONFIG.targetLang;
     const thisRequest = ++requestId;
+    const r = await translate(text, 'auto', tl);
+    if (requestId !== thisRequest || !r) return;
+    if (r.translated.toLowerCase() === text.toLowerCase()) return;
 
-    browser.runtime.sendMessage({ type: 'translate', text, sl: 'auto', tl })
-      .then(async r => {
-        if (requestId !== thisRequest) return;
-        if (!r.translated || r.translated.toLowerCase() === text.toLowerCase()) return;
+    el.focus();
+    await delay(20);
+    doc.execCommand('selectAll', false, null);
+    await delay(20);
 
-        // Refocus and select all again before replacing
-        el.focus();
-        await delay(20);
-        doc.execCommand('selectAll', false, null);
-        await delay(20);
-
-        // Try execCommand insertText first (works on most elements)
-        const inserted = doc.execCommand('insertText', false, r.translated);
-        if (!inserted) {
-          // Fallback: synthetic paste event
-          const dt = new DataTransfer();
-          dt.setData('text/plain', r.translated);
-          el.dispatchEvent(new ClipboardEvent('paste', {
-            clipboardData: dt, data: r.translated,
-            dataType: 'text/plain', bubbles: true, cancelable: true
-          }));
-        }
-
-        // Final fallback for input/textarea: direct value set
-        if (!el.isContentEditable && el.value === text) {
-          const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-          const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-          if (setter) setter.call(el, r.translated);
-          else el.value = r.translated;
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      }).catch(err => console.warn('MTT:', err));
+    const inserted = doc.execCommand('insertText', false, r.translated);
+    if (!inserted) {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', r.translated);
+      el.dispatchEvent(new ClipboardEvent('paste', {
+        clipboardData: dt, bubbles: true, cancelable: true
+      }));
+    }
+    // Last resort for input/textarea: React-safe value set.
+    if (!el.isContentEditable && el.value === text) {
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+      setter.call(el, r.translated);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
   }
 
-  // ── Keyboard ─────────────────────────────────────────────────────────────────
+  // ── Keyboard ────────────────────────────────────────────────────────────────
+  // Registered ONCE. The old build registered the same handlers on document and
+  // window, in both capture and bubble — four calls per keypress, so every toggle
+  // fired an even number of times and landed back where it started. That is why
+  // Alt+T and F8 appeared dead.
 
-  // Track key state: only trigger translate on Alt release without other keys
   let altDown = false, otherKeyDuringAlt = false;
 
-  // Try ALL event targets: document (capture+bubble) and window (capture+bubble)
-  function setupKeyListeners(target, phase) {
-    target.addEventListener('keydown', e => {
-      if (e.key === 'Alt') {
-        altDown = true;
-        otherKeyDuringAlt = false;
-        return;
-      }
-      if (altDown) otherKeyDuringAlt = true;
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Shift') shiftDown = true;
+    if (e.key === 'Alt') { altDown = true; otherKeyDuringAlt = false; return; }
+    if (altDown) otherKeyDuringAlt = true;
 
-      // Escape → hide tooltip
-      if (e.key === 'Escape') { hide(); lastT = ''; }
+    if (e.key === 'Escape') { hide(); hideSelBtn(); lastT = ''; }
 
-      // Alt+T → toggle extension on/off
-      if (e.altKey && (e.key === 't' || e.key === '†')) {
-        otherKeyDuringAlt = true;
-        CONFIG.enabled = !CONFIG.enabled;
-        browser.storage.local.set({ enabled: CONFIG.enabled });
-        notify(CONFIG.enabled ? '✅ Translator ON' : '❌ Translator OFF');
-      }
+    // Alt+T — on/off.  ('†' is what macOS sends for Option+T.)
+    if (e.altKey && (e.key === 't' || e.key === '†')) {
+      CONFIG.enabled = !CONFIG.enabled;
+      browser.storage.local.set({ enabled: CONFIG.enabled });
+      if (!CONFIG.enabled) { hide(); hideSelBtn(); }
+      notify(CONFIG.enabled ? '✅ התרגום פעיל' : '❌ התרגום כבוי');
+    }
 
-      // F8 → toggle word/sentence mode
-      if (e.key === 'F8') {
-        CONFIG.wordMode = !CONFIG.wordMode;
-        browser.storage.local.set({ wordMode: CONFIG.wordMode });
-        notify(CONFIG.wordMode ? '📝 מצב מילה' : '📄 מצב משפט');
-        hide(); lastT = '';
-      }
-    }, phase);
+    // Alt+H — cycle when the hover tooltip may appear.
+    if (e.altKey && (e.key === 'h' || e.key === '˙')) {
+      const order = ['always', 'shift', 'off'];
+      CONFIG.hoverMode = order[(order.indexOf(CONFIG.hoverMode) + 1) % order.length];
+      browser.storage.local.set({ hoverMode: CONFIG.hoverMode });
+      hide();
+      notify({ always: '🖱️ ריחוף: תמיד',
+               shift: '⇧ ריחוף: רק עם Shift',
+               off: '🚫 ריחוף: כבוי' }[CONFIG.hoverMode]);
+    }
 
-    target.addEventListener('keyup', e => {
-      if (e.key === 'Alt') {
-        if (altDown && !otherKeyDuringAlt && CONFIG.enabled) {
-          const t = getActiveInput();
-          if (t) translateInput(t);
-        }
-        altDown = false;
-        otherKeyDuringAlt = false;
-      }
-    }, phase);
-  }
+    // F8 — word vs. sentence.
+    if (e.key === 'F8') {
+      CONFIG.wordMode = !CONFIG.wordMode;
+      browser.storage.local.set({ wordMode: CONFIG.wordMode });
+      notify(CONFIG.wordMode ? '📝 מצב מילה' : '📄 מצב משפט');
+      hide(); lastT = '';
+    }
+  }, true);
 
-  // Register on all possible targets and phases
-  setupKeyListeners(document, true);   // capture
-  setupKeyListeners(document, false);  // bubble
-  setupKeyListeners(window, true);     // capture
-  setupKeyListeners(window, false);    // bubble
-
-  // Also: periodic check if Alt key was recently pressed via DOM flag
-  // Injected script in page context that sets a DOM attribute
-  const helperScript = document.createElement('script');
-  helperScript.textContent = `
-    document.addEventListener('keyup', function(e) {
-      if (e.key === 'Alt' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        document.documentElement.setAttribute('data-mtt-alt', Date.now());
-      }
-    }, true);
-  `;
-  (document.head || document.documentElement).appendChild(helperScript);
-
-  // Watch for the page-context Alt signal
-  const altObserver = new MutationObserver(mutations => {
-    for (const m of mutations) {
-      if (m.attributeName === 'data-mtt-alt' && CONFIG.enabled) {
+  window.addEventListener('keyup', e => {
+    if (e.key === 'Shift') shiftDown = false;
+    if (e.key === 'Alt') {
+      // Alt tapped alone → translate the focused field in place.
+      if (altDown && !otherKeyDuringAlt && CONFIG.enabled) {
         const t = getActiveInput();
         if (t) translateInput(t);
-        document.documentElement.removeAttribute('data-mtt-alt');
+      }
+      altDown = false;
+      otherKeyDuringAlt = false;
+    }
+  }, true);
+
+  browser.runtime.onMessage.addListener(msg => {
+    if (msg.type === 'toggle') {
+      CONFIG.enabled = msg.enabled;
+      if (!CONFIG.enabled) { hide(); hideSelBtn(); }
+    }
+    if (msg.type === 'setting') {
+      CONFIG[msg.key] = msg.value;
+      if (msg.key === 'hoverMode') hide();
+    }
+  });
+
+  // ── Same-origin iframes (chat widgets: Intercom, Drift, about:blank frames) ──
+  // Those frames get no content script of their own, so drive them from here.
+
+  function setupIframe(iframe) {
+    let iDoc;
+    try {
+      iDoc = iframe.contentDocument;
+      if (!iDoc || !iDoc.body || iDoc.__mttIframe) return;
+      iDoc.__mttIframe = true;
+    } catch (_) { return; }   // cross-origin
+
+    const off = () => iframe.getBoundingClientRect();
+    iDoc.addEventListener('mousemove', e => {
+      const r = off();
+      onMove(e, iDoc, r.left, r.top);
+    }, { passive: true });
+    iDoc.addEventListener('mouseup', e => {
+      const r = off();
+      onMouseUp(e, iDoc, r.left, r.top);
+    }, { passive: true });
+    iDoc.addEventListener('keyup', e => {
+      if (e.key !== 'Alt' || !CONFIG.enabled) return;
+      const t = getActiveInput();
+      if (t) translateInput(t);
+    }, true);
+
+    if (!iframe.__mttLoad) {
+      iframe.__mttLoad = true;
+      iframe.addEventListener('load', () => {
+        try {
+          if (iframe.contentDocument) {
+            delete iframe.contentDocument.__mttIframe;
+            setTimeout(() => setupIframe(iframe), 400);
+          }
+        } catch (_) {}
+      });
+    }
+  }
+
+  // Touching contentDocument on a cross-origin frame logs a security error to the
+  // page console even inside try/catch, which is pure noise on ad-heavy sites.
+  // Check the URL first and only reach into frames that can actually be reached.
+  function sameOriginFrame(f) {
+    const src = f.getAttribute('src');
+    if (!src || src === 'about:blank' || src.startsWith('javascript:')) return true;
+    try { return new URL(src, location.href).origin === location.origin; }
+    catch (_) { return false; }
+  }
+
+  function scanIframes() {
+    for (const f of document.querySelectorAll('iframe')) {
+      if (!sameOriginFrame(f)) continue;
+      try { if (f.contentDocument && f.contentDocument.body) setupIframe(f); } catch (_) {}
+    }
+  }
+
+  // The old observer watched every childList mutation in the subtree and queued a
+  // full-document iframe scan for each one, with no debounce — on any live app
+  // (Chatwoot, n8n, Facebook) that is thousands of scans a second. Only react when
+  // an iframe actually appears, and coalesce.
+  let scanQueued = false;
+  const iframeObserver = new MutationObserver(records => {
+    if (scanQueued) return;
+    for (const rec of records) {
+      for (const node of rec.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (node.tagName === 'IFRAME' || (node.querySelector && node.querySelector('iframe'))) {
+          scanQueued = true;
+          setTimeout(() => { scanQueued = false; scanIframes(); }, 700);
+          return;
+        }
       }
     }
   });
-  altObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-mtt-alt'] });
-
-  // ── Auto subtitle translation (YouTube) ─────────────────────────────────────
-  // Uses YouTube's built-in auto-translate via Player API (injected into page context)
-  // This is instant — YouTube renders Hebrew captions natively, no flicker
-
-  function injectYouTubeAutoTranslate() {
-    if (!location.hostname.includes('youtube.com')) return;
-    if (document.getElementById('mtt-yt-sub')) return;
-
-    const script = document.createElement('script');
-    script.id = 'mtt-yt-sub';
-    script.textContent = `
-      (function() {
-        var TARGET_LANG = 'he';
-        var translating = false;
-
-        function ensureHebrewCaptions() {
-          var player = document.getElementById('movie_player');
-          if (!player || !player.getOption || !player.setOption) return;
-
-          // Only translate if user has CC on — don't force it
-          try {
-            if (!player.isSubtitlesOn()) return;
-          } catch(e) { return; }
-
-          // Check current track
-          var track = null;
-          try { track = player.getOption('captions', 'track'); } catch(e) {}
-          if (!track || !track.languageCode) return;
-
-          // Already Hebrew? Done
-          if (track.translationLanguage && track.translationLanguage.languageCode === TARGET_LANG) return;
-          if (track.languageCode === TARGET_LANG) return;
-
-          // Apply translation
-          try {
-            player.setOption('captions', 'track', {
-              languageCode: track.languageCode,
-              translationLanguage: { languageCode: TARGET_LANG }
-            });
-          } catch(e) {}
-        }
-
-        setInterval(ensureHebrewCaptions, 3000);
-
-        window.addEventListener('yt-navigate-finish', function() {
-          setTimeout(ensureHebrewCaptions, 3000);
-        });
-      })();
-    `;
-    (document.head || document.documentElement).appendChild(script);
+  if (document.documentElement) {
+    iframeObserver.observe(document.documentElement, { childList: true, subtree: true });
   }
+  setTimeout(scanIframes, 1200);
+  setTimeout(scanIframes, 4000);
 
-  function startSubtitles() {
-    if (location.hostname.includes('youtube.com')) {
-      injectYouTubeAutoTranslate();
-    }
-  }
+  // ── Shared surface for blocks.js / captions.js ───────────────────────────────
 
-  startSubtitles();
-
+  window.MTT = {
+    CONFIG, DEFAULTS,
+    translate, translateMany,
+    notify, isSkippable, isMostlyTargetLang, isRTL, isOurs,
+    deepElementFromPoint,
+    hideTooltip: hide
+  };
+  document.dispatchEvent(new CustomEvent('mtt-ready'));
 })();
