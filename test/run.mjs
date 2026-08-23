@@ -117,7 +117,7 @@ await page.waitForFunction(() => {
 ok('cached block needs no new request', await page.evaluate(() => window.__mttCalls.translateBatch === 0),
    'batch=' + await page.evaluate(() => window.__mttCalls.translateBatch));
 
-console.log('\n── selection shows the floating button ──');
+console.log('\n── selection translates immediately (no button) ──');
 await page.evaluate(() => window.MTT.blocks.clearAll());
 const p3box = await page.evaluate(() => {
   const r = document.getElementById('p3').getBoundingClientRect();
@@ -127,9 +127,17 @@ await page.mouse.move(p3box.x1, p3box.y);
 await page.mouse.down();
 await page.mouse.move(p3box.x2, p3box.y, { steps: 8 });
 await page.mouse.up();
+await page.waitForFunction(() => document.getElementById('mtt-tip').classList.contains('v'),
+  null, { timeout: 15000 }).catch(() => {});
+ok('selection shows a translated tooltip at once', await page.evaluate(() => {
+  const t = document.getElementById('mtt-tip');
+  return t.classList.contains('v') && /[\u0590-\u05FF]/.test(t.textContent);
+}));
+ok('no leftover translate button in the DOM',
+   await page.evaluate(() => !document.getElementById('mtt-sel')));
+await page.evaluate(() => window.getSelection().removeAllRanges());
+await page.mouse.move(5, 5);
 await page.waitForTimeout(400);
-ok('translate button appears next to a selection',
-   await page.evaluate(() => { const b = document.getElementById('mtt-sel'); return !!b && b.classList.contains('v'); }));
 
 console.log('\n── hover modes ──');
 await page.evaluate(() => { window.MTT.CONFIG.hoverMode = 'off'; });

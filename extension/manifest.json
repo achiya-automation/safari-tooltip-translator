@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Mouse Tooltip Translator",
-  "version": "2.0.0",
+  "version": "2.0.2",
   "description": "Translate what you point at, translate single paragraphs in place, and translate video captions live",
   "permissions": ["storage"],
   "host_permissions": [

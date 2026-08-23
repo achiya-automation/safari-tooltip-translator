@@ -145,7 +145,7 @@
   function isOurs(el) {
     if (!el) return false;
     if (el.id && el.id.startsWith('mtt-')) return true;
-    return !!(el.closest && el.closest('#mtt-tip, #mtt-n, #mtt-sel, .mtt-tr, .mtt-cap'));
+    return !!(el.closest && el.closest('#mtt-tip, #mtt-n, .mtt-tr, .mtt-cap'));
   }
 
   // True only when the cursor visually sits on a direct (non-nested) text-node
@@ -160,8 +160,8 @@
         const range = d.createRange();
         range.selectNodeContents(node);
         for (const rect of range.getClientRects()) {
-          if (x >= rect.left - 2 && x <= rect.right + 2 &&
-              y >= rect.top - 2 && y <= rect.bottom + 2) return true;
+          if (x >= rect.left - 4 && x <= rect.right + 4 &&
+              y >= rect.top - 4 && y <= rect.bottom + 4) return true;
         }
       } catch (_) {}
     }
@@ -173,8 +173,8 @@
       const range = (doc || document).createRange();
       range.selectNodeContents(node);
       for (const rect of range.getClientRects()) {
-        if (x >= rect.left - 2 && x <= rect.right + 2 &&
-            y >= rect.top - 2 && y <= rect.bottom + 2) return rect;
+        if (x >= rect.left - 4 && x <= rect.right + 4 &&
+            y >= rect.top - 4 && y <= rect.bottom + 4) return rect;
       }
     } catch (_) {}
     return null;
@@ -316,7 +316,10 @@
     tip.style.left = Math.max(margin, left) + 'px';
     tip.style.top = Math.max(margin, top) + 'px';
 
-    requestAnimationFrame(() => tip.classList.add('v'));
+    // Forced reflow instead of requestAnimationFrame: rAF is suspended for
+    // hidden/background pages, which left the tooltip filled but never shown.
+    void tip.offsetWidth;
+    tip.classList.add('v');
     vis = true;
     holdRect = anchorRect || null;
   }
@@ -330,17 +333,25 @@
   // Grace area: the text's own box, padded, so small pointer jitter — or moving
   // toward the tooltip — does not blank the translation the moment it appears.
   function insideHold(x, y) {
-    if (!holdRect) return false;
     const pad = 28;
-    return x >= holdRect.left - pad && x <= holdRect.right + pad &&
-           y >= holdRect.top - pad && y <= holdRect.bottom + pad;
+    if (holdRect &&
+        x >= holdRect.left - pad && x <= holdRect.right + pad &&
+        y >= holdRect.top - pad && y <= holdRect.bottom + pad) return true;
+    // The pointer drifting onto the tooltip itself must not dismiss it — that is
+    // exactly where the reader is looking.
+    if (vis && tip) {
+      const r = tip.getBoundingClientRect();
+      if (x >= r.left - 10 && x <= r.right + 10 &&
+          y >= r.top - 10 && y <= r.bottom + 10) return true;
+    }
+    return false;
   }
 
   // ── Hover flow ──────────────────────────────────────────────────────────────
 
   let timer = null, lastT = '', requestId = 0;
 
-  async function translateAndShow(text, isReverse, anchorRect) {
+  async function translateAndShow(text, isReverse, anchorRect, fromHover) {
     if (isSkippable(text)) return;
     if (!isReverse && isMostlyTargetLang(text)) return;
 
@@ -354,6 +365,15 @@
     if (requestId !== thisRequest || !r) return;
     if (r.translated.toLowerCase() === text.toLowerCase()) return;
     if (isSameWords(r.translated, text)) return;
+    // A hover result that lands after the pointer already moved on used to pop in
+    // at a stale position and vanish on the next twitch — a flash, not a help.
+    // Drop it; it is cached, so returning to the text shows it instantly.
+    if (fromHover && anchorRect) {
+      const pad = 34;
+      const near = mx >= anchorRect.left - pad && mx <= anchorRect.right + pad &&
+                   my >= anchorRect.top - pad && my <= anchorRect.bottom + pad;
+      if (!near) { lastT = ''; return; }
+    }
     show(r.translated, r.lang, isReverse, anchorRect);
   }
 
@@ -378,7 +398,7 @@
       const hit = getTextAt(cx, cy, doc);
       if (!hit) return;
       const rect = doc === document ? hit.rect : offsetRect(hit.rect, offsetX, offsetY);
-      translateAndShow(hit.text, false, rect);
+      translateAndShow(hit.text, false, rect, true);
     }, CONFIG.tooltipDelay);
   }
 
@@ -389,54 +409,24 @@
 
   document.addEventListener('mousemove', e => onMove(e, document, 0, 0), { passive: true });
 
-  // ── Selection → floating button (DeepL / Google Translate pattern) ───────────
-
-  let selBtn = null;
-  function ensureSelBtn() {
-    if (selBtn || !document.body) return selBtn;
-    selBtn = document.createElement('button');
-    selBtn.id = 'mtt-sel';
-    selBtn.type = 'button';
-    selBtn.textContent = 'תרגם';
-    selBtn.setAttribute('aria-label', 'תרגם את הטקסט המסומן');
-    selBtn.addEventListener('mousedown', ev => ev.preventDefault());
-    selBtn.addEventListener('click', ev => {
-      ev.stopPropagation();
-      const t = selBtn.dataset.text || '';
-      hideSelBtn();
-      if (t) translateAndShow(t, false, null);
-    });
-    document.body.appendChild(selBtn);
-    return selBtn;
-  }
-
-  function hideSelBtn() { if (selBtn) selBtn.classList.remove('v'); }
-
-  function showSelBtn(text, rect) {
-    const b = ensureSelBtn();
-    if (!b) return;
-    if (b.nextSibling) document.body.appendChild(b);
-    b.dataset.text = text;
-    b.style.left = Math.min(window.innerWidth - 70, Math.max(8, rect.right - 20)) + 'px';
-    b.style.top = Math.min(window.innerHeight - 40, rect.bottom + 6) + 'px';
-    b.classList.add('v');
-    mx = rect.right; my = rect.bottom;
-  }
+  // ── Selection → translate immediately ───────────────────────────────────────
+  // Marking text with the mouse is already a deliberate gesture — no extra
+  // button to click, the translation just appears next to the selection.
 
   function onMouseUp(e, doc, offX, offY) {
     if (!CONFIG.enabled) return;
+    // Small delay so the browser finalizes the selection first.
     setTimeout(() => {
       const sel = (doc || document).getSelection();
-      if (!sel || sel.type !== 'Range') { hideSelBtn(); return; }
+      if (!sel || sel.type !== 'Range') return;
       const text = sel.toString().trim();
-      if (text.length < 2 || isMostlyTargetLang(text)) { hideSelBtn(); return; }
+      if (text.length < 2 || isMostlyTargetLang(text)) return;
       let rect;
-      try {
-        const r = sel.getRangeAt(0).getBoundingClientRect();
-        rect = offsetRect(r, offX, offY);
-      } catch (_) { hideSelBtn(); return; }
+      try { rect = offsetRect(sel.getRangeAt(0).getBoundingClientRect(), offX, offY); }
+      catch (_) { return; }
       if (timer) { clearTimeout(timer); timer = null; }
-      showSelBtn(text.substring(0, 4000), rect);
+      mx = rect.right; my = rect.bottom;
+      translateAndShow(text.substring(0, 4000), false, rect, false);
     }, 40);
   }
 
@@ -445,11 +435,7 @@
     onMouseUp(e, document, 0, 0);
   }, { passive: true });
 
-  document.addEventListener('mousedown', e => {
-    if (!isOurs(e.target)) hideSelBtn();
-  }, { passive: true });
-
-  document.addEventListener('scroll', () => { hideSelBtn(); if (vis) hide(); }, { passive: true, capture: true });
+  document.addEventListener('scroll', () => { if (vis) hide(); }, { passive: true, capture: true });
 
   // ── Input translation (tap Alt) ─────────────────────────────────────────────
 
@@ -550,13 +536,13 @@
     if (e.key === 'Alt') { altDown = true; otherKeyDuringAlt = false; return; }
     if (altDown) otherKeyDuringAlt = true;
 
-    if (e.key === 'Escape') { hide(); hideSelBtn(); lastT = ''; }
+    if (e.key === 'Escape') { hide(); lastT = ''; }
 
     // Alt+T — on/off.  ('†' is what macOS sends for Option+T.)
     if (e.altKey && (e.key === 't' || e.key === '†')) {
       CONFIG.enabled = !CONFIG.enabled;
       browser.storage.local.set({ enabled: CONFIG.enabled });
-      if (!CONFIG.enabled) { hide(); hideSelBtn(); }
+      if (!CONFIG.enabled) { hide(); }
       notify(CONFIG.enabled ? '✅ התרגום פעיל' : '❌ התרגום כבוי');
     }
 
@@ -596,7 +582,7 @@
   browser.runtime.onMessage.addListener(msg => {
     if (msg.type === 'toggle') {
       CONFIG.enabled = msg.enabled;
-      if (!CONFIG.enabled) { hide(); hideSelBtn(); }
+      if (!CONFIG.enabled) { hide(); }
     }
     if (msg.type === 'setting') {
       CONFIG[msg.key] = msg.value;
